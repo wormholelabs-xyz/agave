@@ -85,8 +85,13 @@ use {
         ops::RangeBounds,
         path::{Path, PathBuf},
         sync::{
+<<<<<<< HEAD
             atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
             Arc, Condvar, Mutex, RwLock, RwLockReadGuard,
+=======
+            Arc, Mutex, RwLock,
+            atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
         },
         thread::{self, sleep},
         time::{Duration, Instant},
@@ -1070,17 +1075,6 @@ pub enum MarkObsoleteAccounts {
 /// from the accounts index. In addition, the minimal dirty slot is
 /// included in the returned value.
 type CleaningCandidates = (Box<[RwLock<HashMap<Pubkey, CleaningInfo>>]>, Option<Slot>);
-
-/// Removing unrooted slots in Accounts Background Service needs to be synchronized with flushing
-/// slots from the Accounts Cache.  This keeps track of those slots and the Mutex + Condvar for
-/// synchronization.
-#[derive(Debug, Default)]
-struct RemoveUnrootedSlotsSynchronization {
-    // slots being flushed from the cache or being purged
-    slots_under_contention: Mutex<IntSet<Slot>>,
-    signal: Condvar,
-}
-
 type AccountInfoAccountsIndex = AccountsIndex<AccountInfo, AccountInfo>;
 
 // This structure handles the load/store of the accounts
@@ -1162,11 +1156,6 @@ pub struct AccountsDb {
 
     /// true if drop_callback is attached to the bank.
     is_bank_drop_callback_enabled: AtomicBool,
-
-    /// Set of slots currently being flushed by `flush_slot_cache()` or removed
-    /// by `remove_unrooted_slot()`. Used to ensure `remove_unrooted_slots(slots)`
-    /// can safely clear the set of unrooted slots `slots`.
-    remove_unrooted_slots_synchronization: RemoveUnrootedSlotsSynchronization,
 
     shrink_ratio: AccountShrinkThreshold,
 
@@ -1374,7 +1363,6 @@ impl AccountsDb {
             #[cfg(test)]
             load_limit: AtomicU64::default(),
             is_bank_drop_callback_enabled: AtomicBool::default(),
-            remove_unrooted_slots_synchronization: RemoveUnrootedSlotsSynchronization::default(),
             dirty_stores: DashMap::default(),
             zero_lamport_accounts_to_purge_after_full_snapshot: DashSet::default(),
             log_dead_slots: AtomicBool::new(true),
@@ -4669,60 +4657,6 @@ impl AccountsDb {
             "Trying to remove accounts for rooted slots {rooted_slots:?}"
         );
 
-        let RemoveUnrootedSlotsSynchronization {
-            slots_under_contention,
-            signal,
-        } = &self.remove_unrooted_slots_synchronization;
-
-        {
-            // Slots that are currently being flushed by flush_slot_cache()
-
-            let mut currently_contended_slots = slots_under_contention.lock().unwrap();
-
-            // Slots that are currently being flushed by flush_slot_cache() AND
-            // we want to remove in this function
-            let mut remaining_contended_flush_slots: Vec<Slot> = remove_slots
-                .iter()
-                .filter_map(|(remove_slot, _)| {
-                    // Reserve the slots that we want to purge that aren't currently
-                    // being flushed to prevent cache from flushing those slots in
-                    // the future.
-                    //
-                    // Note that the single replay thread has to remove a specific slot `N`
-                    // before another version of the same slot can be replayed. This means
-                    // multiple threads should not call `remove_unrooted_slots()` simultaneously
-                    // with the same slot.
-                    let is_being_flushed = !currently_contended_slots.insert(*remove_slot);
-                    // If the cache is currently flushing this slot, add it to the list
-                    is_being_flushed.then_some(remove_slot)
-                })
-                .cloned()
-                .collect();
-
-            // Wait for cache flushes to finish
-            loop {
-                if !remaining_contended_flush_slots.is_empty() {
-                    // Wait for the signal that the cache has finished flushing a slot
-                    //
-                    // Don't wait if the remaining_contended_flush_slots is empty, otherwise
-                    // we may never get a signal since there's no cache flush thread to
-                    // do the signaling
-                    currently_contended_slots = signal.wait(currently_contended_slots).unwrap();
-                } else {
-                    // There are no slots being flushed to wait on, so it's safe to continue
-                    // to purging the slots we want to purge!
-                    break;
-                }
-
-                // For each slot the cache flush has finished, mark that we're about to start
-                // purging these slots by reserving it in `currently_contended_slots`.
-                remaining_contended_flush_slots.retain(|flush_slot| {
-                    // returns true if slot was already in set. This means slot is being flushed
-                    !currently_contended_slots.insert(*flush_slot)
-                });
-            }
-        }
-
         // Mark down these slots are about to be purged so that new attempts to scan these
         // banks fail, and any ongoing scans over these slots will detect that they should abort
         // their results
@@ -4739,11 +4673,6 @@ impl AccountsDb {
             &remove_unrooted_purge_stats,
         );
         remove_unrooted_purge_stats.report("remove_unrooted_slots_purge_slots_stats", None);
-
-        let mut currently_contended_slots = slots_under_contention.lock().unwrap();
-        for (remove_slot, _) in remove_slots {
-            assert!(currently_contended_slots.remove(remove_slot));
-        }
     }
 
     /// Calculates the `AccountLtHash` of `account`
@@ -4801,16 +4730,18 @@ impl AccountsDb {
         self.accounts_cache.report_size();
     }
 
-    /// true if write cache is too big
+    /// true if write cache is too big and there are unflushed roots available to flush.
+    /// If there are no unflushed roots, we cannot reduce cache size because unrooted
+    /// slots are not flushed.
     fn should_aggressively_flush_cache(&self) -> bool {
         self.write_cache_limit_bytes
             .unwrap_or(WRITE_CACHE_LIMIT_BYTES_DEFAULT)
             < self.accounts_cache.size()
+            && self.accounts_cache.num_unflushed_roots() > 0
     }
 
     // `force_flush` flushes all the cached roots `<= requested_flush_root`. It also then
-    // flushes:
-    // 1) excess remaining roots or unrooted slots while 'should_aggressively_flush_cache' is true
+    // flushes excess remaining rooted slots while 'should_aggressively_flush_cache' is true
     pub fn flush_accounts_cache(&self, force_flush: bool, requested_flush_root: Option<Slot>) {
         #[cfg(not(test))]
         assert!(requested_flush_root.is_some());
@@ -4836,23 +4767,28 @@ impl AccountsDb {
         flush_roots_elapsed.stop();
 
         // Note we don't purge unrooted slots here because there may be ongoing scans/references
-        // for those slot, let the Bank::drop() implementation do cleanup instead on dead
+        // for those slots, let the Bank::drop() implementation do cleanup instead on dead
         // banks
 
         // If 'should_aggressively_flush_cache', then flush the excess ones to storage
         let (total_new_excess_roots, num_excess_roots_flushed, flush_stats_aggressively) =
             if self.should_aggressively_flush_cache() {
-                // Start by flushing the roots
-                //
                 // Cannot do any cleaning on roots past `requested_flush_root` because future
+<<<<<<< HEAD
                 // snapshots may need updates from those later slots, hence we pass `false`
                 // for `should_clean`.
                 self.flush_rooted_accounts_cache(None, false)
+=======
+                // snapshots may need updates from those later slots, hence we call the
+                // without clean variant
+                self.flush_rooted_accounts_cache_without_clean()
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
             } else {
                 (0, 0, FlushStats::default())
             };
         flush_stats.accumulate(&flush_stats_aggressively);
 
+<<<<<<< HEAD
         let mut excess_slot_count = 0;
         let mut unflushable_unrooted_slot_count = 0;
         let max_flushed_root = self.accounts_cache.fetch_max_flush_root();
@@ -4893,18 +4829,14 @@ impl AccountsDb {
             );
         }
 
+=======
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
         datapoint_info!(
             "accounts_db-flush_accounts_cache",
             ("total_new_cleaned_roots", total_new_cleaned_roots, i64),
             ("num_cleaned_roots_flushed", num_cleaned_roots_flushed, i64),
             ("total_new_excess_roots", total_new_excess_roots, i64),
             ("num_excess_roots_flushed", num_excess_roots_flushed, i64),
-            ("excess_slot_count", excess_slot_count, i64),
-            (
-                "unflushable_unrooted_slot_count",
-                unflushable_unrooted_slot_count,
-                i64
-            ),
             ("flush_roots_elapsed", flush_roots_elapsed.as_us(), i64),
             (
                 "account_bytes_flushed",
@@ -4983,6 +4915,7 @@ impl AccountsDb {
             }
         }
 
+<<<<<<< HEAD
         // Note that self.flush_slot_cache_with_clean() can return None if the
         // slot is already been flushed. This can happen if the cache is
         // overwhelmed and we flushed some yet to be rooted frozen slots.
@@ -4995,6 +4928,10 @@ impl AccountsDb {
             self.accounts_cache.set_max_flush_root(root);
         }
         let num_new_roots = flushed_roots.len();
+=======
+        max_flush_root.inspect(|&root| self.accounts_cache.set_max_flush_root(root));
+
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
         (num_new_roots, num_roots_flushed, flush_stats)
     }
 
@@ -5005,6 +4942,7 @@ impl AccountsDb {
         mut should_flush_f: Option<&mut impl FnMut(&Pubkey) -> bool>,
         max_clean_root: Option<Slot>,
     ) -> FlushStats {
+        debug_assert!(self.accounts_index.is_alive_root(slot));
         let mut flush_stats = FlushStats::default();
         let iter_items: Vec<_> = slot_cache.iter().collect();
         let mut pubkeys: Vec<Pubkey> = vec![];
@@ -5105,11 +5043,14 @@ impl AccountsDb {
         flush_stats
     }
 
+<<<<<<< HEAD
     /// flush all accounts in this slot
     fn flush_slot_cache(&self, slot: Slot) -> Option<FlushStats> {
         self.flush_slot_cache_with_clean(slot, None::<&mut fn(&_) -> bool>, None)
     }
 
+=======
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
     /// `should_flush_f` is an optional closure that determines whether a given
     /// account should be flushed. Passing `None` will by default flush all
     /// accounts
@@ -5119,6 +5060,7 @@ impl AccountsDb {
         should_flush_f: Option<&mut impl FnMut(&Pubkey) -> bool>,
         max_clean_root: Option<Slot>,
     ) -> Option<FlushStats> {
+<<<<<<< HEAD
         if self
             .remove_unrooted_slots_synchronization
             .slots_under_contention
@@ -5159,6 +5101,12 @@ impl AccountsDb {
             // We have already seen this slot. It is already under flushing. Skip.
             None
         }
+=======
+        // If a slot cache exists for this slot, flush it.
+        self.accounts_cache.slot_cache(slot).map(|slot_cache| {
+            self.do_flush_slot_cache(slot, &slot_cache, should_flush_f, max_clean_root)
+        })
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
     }
 
     fn report_store_stats(&self) {

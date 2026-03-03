@@ -5406,6 +5406,7 @@ fn test_same_program_id_uses_unique_executable_accounts() {
 }
 
 #[test]
+<<<<<<< HEAD
 fn test_clean_nonrooted() {
     agave_logger::setup();
 
@@ -5479,6 +5480,8 @@ fn test_clean_nonrooted() {
 }
 
 #[test]
+=======
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
 fn test_shrink_candidate_slots_cached() {
     agave_logger::setup();
 

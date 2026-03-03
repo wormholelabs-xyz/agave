@@ -3172,24 +3172,27 @@ fn run_test_flush_accounts_cache_if_needed(num_roots: usize, num_unrooted: usize
     db.flush_accounts_cache(false, None);
 
     let total_slots = num_roots + num_unrooted;
-    // If there's <= the max size, then nothing will be flushed from the slot
+    // If there's <= the max size, then nothing will be flushed from the cache
     if total_slots <= max_cache_slots() {
         assert_eq!(db.accounts_cache.num_slots(), total_slots);
     } else {
-        // Otherwise, all the roots are flushed, and only at most max_cache_slots()
-        // of the unrooted slots are kept in the cache
-        let expected_size = std::cmp::min(num_unrooted, max_cache_slots());
-        if expected_size > 0 {
-            // +1: slot is 1-based. slot 1 has 1 byte of data
-            for unrooted_slot in (total_slots - expected_size + 1)..total_slots {
-                assert!(
-                    db.accounts_cache
-                        .slot_cache(unrooted_slot as Slot)
-                        .is_some(),
-                    "unrooted_slot: {unrooted_slot}, total_slots: {total_slots}, expected_size: \
-                     {expected_size}"
-                );
-            }
+        // Otherwise, all roots are flushed to storage and all unrooted slots remain
+        // in the cache. unrooted slots are never evicted by the flush path, so they will
+        // always be in the cache regardless of the total size.
+        assert_eq!(db.accounts_cache.num_slots(), num_unrooted);
+        for root_slot in 0..num_roots {
+            assert!(
+                db.accounts_cache.slot_cache(root_slot as Slot).is_none(),
+                "root_slot {root_slot} should have been flushed from cache"
+            );
+        }
+        for unrooted_slot in num_roots..total_slots {
+            assert!(
+                db.accounts_cache
+                    .slot_cache(unrooted_slot as Slot)
+                    .is_some(),
+                "unrooted_slot {unrooted_slot} should remain in cache"
+            );
         }
     }
 
@@ -4529,6 +4532,7 @@ fn test_load_account_and_shrink_race_without_retry() {
 }
 
 #[test]
+<<<<<<< HEAD
 fn test_cache_flush_delayed_remove_unrooted_race() {
     let mut db = AccountsDb::new_single_for_tests();
     db.load_delay = RACY_SLEEP_MS;
@@ -4722,6 +4726,8 @@ fn test_cache_flush_remove_unrooted_race_multiple_slots() {
 }
 
 #[test]
+=======
+>>>>>>> 953fa5c33 (Remove flush to storage of unrooted slots (#10784))
 fn test_collect_uncleaned_slots_up_to_slot() {
     agave_logger::setup();
     let db = AccountsDb::new_single_for_tests();
