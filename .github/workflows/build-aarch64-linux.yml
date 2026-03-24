@@ -1,0 +1,81 @@
+name: Build aarch64 Linux Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 2.2.20 — no v prefix)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout tag v${{ inputs.version }}
+        uses: actions/checkout@v6
+        with:
+          ref: v${{ inputs.version }}
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libudev-dev \
+            libclang-dev \
+            protobuf-compiler \
+            libhidapi-dev
+
+      - name: Install Rust toolchain
+        run: |
+          source ci/rust-version.sh stable
+          rustup install "$rust_stable"
+          rustup default "$rust_stable"
+
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            dev-bins/target
+          key: aarch64-linux-cargo-${{ inputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            aarch64-linux-cargo-${{ inputs.version }}-
+            aarch64-linux-cargo-
+
+      - name: Build release tarball
+        run: |
+          scripts/create-release-tarball.sh \
+            --channel-or-tag "v${{ inputs.version }}" \
+            --target aarch64-unknown-linux-gnu \
+            --tarball-basename solana-release \
+            --include-val-bins
+
+      - name: Verify tarball contents
+        run: |
+          echo "--- Tarball info ---"
+          ls -lh solana-release-aarch64-unknown-linux-gnu.tar.bz2
+
+          echo "--- version.yml ---"
+          tar -xjf solana-release-aarch64-unknown-linux-gnu.tar.bz2 \
+            solana-release/version.yml -O
+
+          echo ""
+          echo "--- Binaries ---"
+          tar -tjf solana-release-aarch64-unknown-linux-gnu.tar.bz2 | \
+            grep '/bin/' | sort
+
+      - name: Upload release tarball to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "v${{ inputs.version }}" \
+            solana-release-aarch64-unknown-linux-gnu.tar.bz2 \
+            solana-release-aarch64-unknown-linux-gnu.yml \
+            agave-install-init-aarch64-unknown-linux-gnu \
+            --clobber
