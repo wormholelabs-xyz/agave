@@ -4861,7 +4861,6 @@ impl AccountsDb {
             }
         }
 
-
         if let Some(&root) = flushed_roots.last() {
             self.accounts_cache.set_max_flush_root(root);
         }
@@ -4991,21 +4990,21 @@ impl AccountsDb {
         should_flush_f: Option<&mut impl FnMut(&Pubkey) -> bool>,
         max_clean_root: Option<Slot>,
     ) -> Option<FlushStats> {
-            // We have not seen this slot, flush it.
-            let flush_stats = self.accounts_cache.slot_cache(slot).map(|slot_cache| {
-                #[cfg(test)]
-                {
-                    // Give some time for cache flushing to occur here for unit tests
-                    sleep(Duration::from_millis(self.load_delay));
-                }
-                // Since we added the slot to `slots_under_contention` AND this slot
-                // still exists in the cache, we know the slot cannot be removed
-                // by any other threads past this point. We are now responsible for
-                // flushing this slot.
-                self.do_flush_slot_cache(slot, &slot_cache, should_flush_f, max_clean_root)
-            });
+        // We have not seen this slot, flush it.
+        let flush_stats = self.accounts_cache.slot_cache(slot).map(|slot_cache| {
+            #[cfg(test)]
+            {
+                // Give some time for cache flushing to occur here for unit tests
+                sleep(Duration::from_millis(self.load_delay));
+            }
+            // Since we added the slot to `slots_under_contention` AND this slot
+            // still exists in the cache, we know the slot cannot be removed
+            // by any other threads past this point. We are now responsible for
+            // flushing this slot.
+            self.do_flush_slot_cache(slot, &slot_cache, should_flush_f, max_clean_root)
+        });
 
-            flush_stats
+        flush_stats
     }
 
     fn report_store_stats(&self) {

@@ -4531,7 +4531,6 @@ fn test_load_account_and_shrink_race_without_retry() {
     do_test_load_account_and_shrink_race(false);
 }
 
-
 #[test]
 fn test_collect_uncleaned_slots_up_to_slot() {
     agave_logger::setup();

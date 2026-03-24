@@ -5405,7 +5405,6 @@ fn test_same_program_id_uses_unique_executable_accounts() {
     assert_eq!(1, bank.get_account(&program2_pubkey).unwrap().data().len());
 }
 
-
 #[test]
 fn test_shrink_candidate_slots_cached() {
     agave_logger::setup();
