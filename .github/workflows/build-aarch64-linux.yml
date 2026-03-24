@@ -42,19 +42,33 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            dev-bins/target
           key: aarch64-linux-cargo-${{ inputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             aarch64-linux-cargo-${{ inputs.version }}-
             aarch64-linux-cargo-
 
-      - name: Build release tarball
+      - name: Build binaries
         run: |
-          scripts/create-release-tarball.sh \
-            --channel-or-tag "v${{ inputs.version }}" \
-            --target aarch64-unknown-linux-gnu \
-            --tarball-basename solana-release \
-            --include-val-bins
+          source ci/rust-version.sh stable
+          scripts/cargo-install-all.sh stable solana-release
+
+      - name: Create release tarball
+        run: |
+          TARGET=aarch64-unknown-linux-gnu
+          CHANNEL_OR_TAG="v${{ inputs.version }}"
+          COMMIT="$(git rev-parse HEAD)"
+
+          {
+            echo "channel: ${CHANNEL_OR_TAG}"
+            echo "commit: ${COMMIT}"
+            echo "target: ${TARGET}"
+          } > solana-release/version.yml
+
+          cp solana-release/bin/agave-install-init "agave-install-init-${TARGET}"
+          cp solana-release/version.yml "solana-release-${TARGET}.yml"
+
+          tar cvf "solana-release-${TARGET}.tar" solana-release
+          bzip2 "solana-release-${TARGET}.tar"
 
       - name: Verify tarball contents
         run: |
