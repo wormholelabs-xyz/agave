@@ -87,30 +87,6 @@ jobs:
           tar -tjf solana-release-aarch64-unknown-linux-gnu.tar.bz2 | \
             grep '/bin/' | sort
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: aarch64-linux-release
-          path: |
-            solana-release-aarch64-unknown-linux-gnu.tar.bz2
-            solana-release-aarch64-unknown-linux-gnu.yml
-            agave-install-init-aarch64-unknown-linux-gnu
-
-  publish:
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout (for git context)
-        uses: actions/checkout@v6
-        with:
-          ref: v${{ inputs.version }}
-          fetch-depth: 1
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: aarch64-linux-release
-
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,8 +101,6 @@ jobs:
               --notes "aarch64-unknown-linux-gnu release for $TAG" \
               --target "$(git rev-parse HEAD)"
           fi
-
-          ls -lh
 
           gh release upload "$TAG" \
             solana-release-aarch64-unknown-linux-gnu.tar.bz2 \
