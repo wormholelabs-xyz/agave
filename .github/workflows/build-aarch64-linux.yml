@@ -88,7 +88,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "v${{ inputs.version }}" \
+          TAG="v${{ inputs.version }}"
+
+          # Create the release if it doesn't already exist
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG not found, creating it..."
+            gh release create "$TAG" \
+              --title "Release $TAG" \
+              --notes "aarch64-unknown-linux-gnu release for $TAG" \
+              --target "$TAG"
+          fi
+
+          gh release upload "$TAG" \
             solana-release-aarch64-unknown-linux-gnu.tar.bz2 \
             solana-release-aarch64-unknown-linux-gnu.yml \
             agave-install-init-aarch64-unknown-linux-gnu \
